@@ -1,0 +1,46 @@
+# Model checkpoints — store in GCS, never in git
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Large data
+*.zip
+*.7z
+*.pgm
+arcade_aug5k/
+arcade_proc/
+
+# Jupyter
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Secrets / credentials — never commit these
+.env
+*.env
+credentials.db
+access_tokens.db
+*.key
+
+# Logs and ephemeral outputs
+run.log
+*.log
+/tmp/
+
+# Result images (large binary, store in GCS)
+*.png
+*.jpeg
+*.jpg
+results_518/
+
+# MedSAM2 upstream clone — not our code
+MedSAM2/
