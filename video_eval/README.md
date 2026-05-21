@@ -28,6 +28,10 @@ Qualitative comparison of **zero-shot MedSAM2** vs **ARCADE v2 fine-tuned MedSAM
 - **Centroid**: mean position of pixels above 85th percentile of a Gaussian center-weighted intensity map (σ = min(H,W)/3), downweighting bright border artifacts
 - Same centroid-click strategy used at both training and inference
 
+## Full Results
+
+Frame comparison grids and MP4s for all 10 studies available on request — contact [es4033@columbia.edu](mailto:es4033@columbia.edu).
+
 ## Dataset
 
 CoronaryDominance provides coronary dominance classification labels only — no per-frame vessel segmentation masks exist. This evaluation is qualitative. Quantitative video Dice requires future clinician-annotated ground truth.
