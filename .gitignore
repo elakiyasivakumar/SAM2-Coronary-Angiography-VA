@@ -44,3 +44,13 @@ results_518/
 
 # MedSAM2 upstream clone — not our code
 MedSAM2/
+
+# Internal notes and executed notebooks with outputs
+arcade_v2_executed.ipynb
+coronary_medsam2_fixed_(1).ipynb
+rape.md
+context.md
+device_deployment_brief.md
+SKILL.md
+5_18/
+annotation/
