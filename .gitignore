@@ -42,6 +42,9 @@ run.log
 *.jpg
 results_518/
 
+# Allow the one featured video in video_eval/
+!video_eval/vid5_comparison.mp4
+
 # MedSAM2 upstream clone — not our code
 MedSAM2/
 
