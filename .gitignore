@@ -55,8 +55,9 @@ SKILL.md
 5_18/
 annotation/
 
-# Paper draft and results (not ready for public)
+# Paper draft, results, and internal notes (not ready for public)
 paper.tex
 references.bib
 results_log.md
 results.md
+methods.md
