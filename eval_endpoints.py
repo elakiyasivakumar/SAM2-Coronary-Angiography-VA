@@ -75,6 +75,12 @@ def load_predictor(ckpt_local: str):
             local_dir=os.path.dirname(ckpt_local) or ".",
         )
 
+    # Fine-tuned checkpoints are saved as raw state dicts; wrap if needed
+    _sd = torch.load(ckpt_local, map_location="cpu", weights_only=False)
+    if not (isinstance(_sd, dict) and "model" in _sd):
+        print("Wrapping checkpoint into {'model': state_dict} format...")
+        torch.save({"model": _sd}, ckpt_local)
+
     model = build_sam2("configs/sam2.1_hiera_t512.yaml", ckpt_local, device=DEVICE)
     model.eval()
     return SAM2ImagePredictor(model)
