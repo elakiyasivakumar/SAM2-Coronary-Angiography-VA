@@ -75,8 +75,7 @@ def load_predictor(ckpt_local: str):
             local_dir=os.path.dirname(ckpt_local) or ".",
         )
 
-    cfg = os.path.join(medsam2_path, "configs", "sam2.1_hiera_t512.yaml")
-    model = build_sam2(cfg, ckpt_local, device=DEVICE)
+    model = build_sam2("configs/sam2.1_hiera_t512.yaml", ckpt_local, device=DEVICE)
     model.eval()
     return SAM2ImagePredictor(model)
 
