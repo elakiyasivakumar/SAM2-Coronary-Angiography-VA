@@ -42,7 +42,7 @@ def pull_arcade_val(data_dir: str):
     os.makedirs(data_dir, exist_ok=True)
     print("Pulling ARCADE val from GCS...")
     subprocess.run(
-        ["gsutil", "-m", "cp", "-r", f"{GCS_BUCKET}/arcade_val/*", data_dir + "/"],
+        ["gsutil", "-m", "cp", "-r", f"{GCS_BUCKET}/datasets/arcade/val/", data_dir],
         check=True,
     )
 
