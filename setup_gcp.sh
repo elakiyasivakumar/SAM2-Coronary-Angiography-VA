@@ -43,7 +43,7 @@ cd /opt/SAM2
 # Override MedSAM2 path so eval_endpoints.py can find it
 export PYTHONPATH="/opt/MedSAM2:${PYTHONPATH:-}"
 
-python eval_endpoints.py \
+python3 eval_endpoints.py \
     --data_dir   /tmp/arcade_val \
     --output_dir /tmp/endpoint_results \
     --ckpt       /tmp/medsam2_arcade_v2.pt \
