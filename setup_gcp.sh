@@ -12,8 +12,8 @@ echo " CA-SAM2 Endpoint Evaluation — GCP Setup"
 echo "============================================================"
 
 # ── System packages ──────────────────────────────────────────────────────────
-sudo apt-get update -q
-sudo apt-get install -y -q git ffmpeg libgl1 libglib2.0-0
+apt-get update -q
+apt-get install -y -q git ffmpeg libgl1 libglib2.0-0
 
 # ── Python dependencies ───────────────────────────────────────────────────────
 pip install -q --upgrade pip
