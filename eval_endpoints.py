@@ -47,8 +47,20 @@ def pull_arcade_val(data_dir: str):
     )
 
 
+def _find_medsam2() -> str:
+    """Locate MedSAM2 root: env var > /opt > ~/MedSAM2."""
+    for candidate in [
+        os.environ.get("MEDSAM2_PATH", ""),
+        "/opt/MedSAM2",
+        os.path.expanduser("~/MedSAM2"),
+    ]:
+        if candidate and os.path.isdir(candidate):
+            return candidate
+    raise RuntimeError("MedSAM2 not found. Clone it or set MEDSAM2_PATH.")
+
+
 def load_predictor(ckpt_local: str):
-    medsam2_path = os.path.expanduser("~/MedSAM2")
+    medsam2_path = _find_medsam2()
     if medsam2_path not in sys.path:
         sys.path.insert(0, medsam2_path)
 
