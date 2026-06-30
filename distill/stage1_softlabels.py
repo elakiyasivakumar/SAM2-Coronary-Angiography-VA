@@ -48,9 +48,14 @@ def download_data():
 
 def download_checkpoint():
     if not os.path.exists(CKPT_PATH):
-        subprocess.run(
-            ["gsutil", "cp", f"{BUCKET}/checkpoints/medsam2_arcade_v2.pt", CKPT_PATH],
-            check=True)
+        from huggingface_hub import hf_hub_download
+        hf_hub_download(repo_id="Elakiya17/CA-SAM2", filename="medsam2_arcade_v2.pt",
+                        local_dir=os.path.dirname(CKPT_PATH))
+    # build_sam2 expects {"model": state_dict} — wrap if raw
+    sd = torch.load(CKPT_PATH, map_location="cpu", weights_only=False)
+    if not (isinstance(sd, dict) and "model" in sd):
+        torch.save({"model": sd}, CKPT_PATH)
+        print("Checkpoint wrapped for build_sam2")
 
 
 def centroid_click(mask_np):
@@ -63,7 +68,7 @@ def centroid_click(mask_np):
 def load_teacher():
     sys.path.insert(0, MEDSAM2_DIR)
     from sam2.build_sam import build_sam2
-    model = build_sam2(CONFIG, CKPT_PATH, device=DEVICE)
+    model = build_sam2("configs/sam2.1_hiera_t512.yaml", CKPT_PATH, device=DEVICE)
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)

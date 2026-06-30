@@ -203,6 +203,8 @@ def build_mobilesam(teacher_ckpt):
 
     # transplant fine-tuned decoder from teacher
     teacher_sd = torch.load(teacher_ckpt, map_location="cpu", weights_only=False)
+    if isinstance(teacher_sd, dict) and set(teacher_sd.keys()) == {"model"}:
+        teacher_sd = teacher_sd["model"]
     decoder_sd  = {k.replace("sam_mask_decoder.", ""): v
                    for k, v in teacher_sd.items()
                    if k.startswith("sam_mask_decoder.")}
@@ -262,6 +264,8 @@ class RepViTSAM(nn.Module):
 
         # transplant fine-tuned decoder
         teacher_sd = torch.load(teacher_ckpt, map_location="cpu", weights_only=False)
+        if isinstance(teacher_sd, dict) and set(teacher_sd.keys()) == {"model"}:
+            teacher_sd = teacher_sd["model"]
         decoder_sd  = {k.replace("sam_mask_decoder.", ""): v
                        for k, v in teacher_sd.items()
                        if k.startswith("sam_mask_decoder.")}
@@ -341,9 +345,9 @@ def train(args):
 
     teacher_ckpt = "/home/jupyter/medsam2_arcade_v2.pt"
     if not os.path.exists(teacher_ckpt):
-        subprocess.run(["gsutil", "cp",
-                        f"{BUCKET}/checkpoints/medsam2_arcade_v2.pt",
-                        teacher_ckpt], check=True)
+        from huggingface_hub import hf_hub_download
+        hf_hub_download(repo_id="Elakiya17/CA-SAM2", filename="medsam2_arcade_v2.pt",
+                        local_dir="/home/jupyter")
 
     # download soft labels
     if not os.path.exists(SOFT_DIR) or len(glob.glob(SOFT_DIR + "/*.npy")) < 100:
