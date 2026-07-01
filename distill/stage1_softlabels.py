@@ -80,7 +80,9 @@ def run_teacher_batch(model, imgs_t, points_list):
     B = imgs_t.shape[0]
     imgs_dev = imgs_t.to(DEVICE)
 
-    with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float16):
+    autocast_ctx = (torch.autocast(device_type="cuda", dtype=torch.float16)
+                    if DEVICE == "cuda" else torch.no_grad())
+    with torch.no_grad(), autocast_ctx:
         backbone_out = model.forward_image(imgs_dev)
         _, vision_feats, _, _ = model._prepare_backbone_features(backbone_out)
         if model.directly_add_no_mem_embed:

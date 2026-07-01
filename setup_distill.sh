@@ -11,6 +11,9 @@ exec > >(tee -a "$LOG") 2>&1
 
 GCS_BUCKET="gs://coronary-angio-v2"
 
+# Always shut down on exit (success or failure) so VM never idles
+trap 'gsutil cp "$LOG" "${GCS_BUCKET}/results/distillation/distill_run.log" 2>/dev/null || true; shutdown -h now' EXIT
+
 echo "============================================================"
 echo " CA-SAM2 Distillation Pipeline — $(date)"
 echo "============================================================"

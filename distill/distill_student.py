@@ -378,7 +378,7 @@ def train(args):
 
     optimizer = optim.AdamW(trainable, lr=BASE_LR, weight_decay=WD)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
-    scaler    = torch.amp.GradScaler("cuda")
+    scaler    = torch.amp.GradScaler("cuda", enabled=(DEVICE == "cuda"))
 
     use_kd    = args.ablation >= 2
     use_cldice = args.ablation >= 3
@@ -410,7 +410,9 @@ def train(args):
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.autocast(device_type="cuda", dtype=torch.float16):
+            autocast_ctx = (torch.autocast(device_type="cuda", dtype=torch.float16)
+                            if DEVICE == "cuda" else torch.no_grad())
+            with autocast_ctx:
                 if args.student == "mobilesam":
                     logits = forward_mobilesam(model, imgs_d, pts_list)
                 else:
@@ -482,7 +484,9 @@ def evaluate(args):
             pts    = [(torch.tensor(cx / mask.shape[1] * img_size),
                        torch.tensor(cy / mask.shape[0] * img_size))]
 
-            with torch.autocast(device_type="cuda", dtype=torch.float16):
+            autocast_ctx = (torch.autocast(device_type="cuda", dtype=torch.float16)
+                            if DEVICE == "cuda" else torch.no_grad())
+            with autocast_ctx:
                 if args.student == "mobilesam":
                     logits = forward_mobilesam(model, img_t, pts)
                 else:
