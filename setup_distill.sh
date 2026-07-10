@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Headless distillation pipeline: Stage 1 (soft labels) + Stage 2 (both students).
+# Headless distillation pipeline: both students trained against HF teacher.
+# Soft labels generated on-the-fly at start of each student run (cached in /tmp).
 # Passed via --metadata=startup-script-url=... on a GCP Compute Engine VM.
 # Results → gs://coronary-angio-v2/results/distillation/
 
@@ -61,21 +62,15 @@ gsutil -m cp -r "${GCS_BUCKET}/datasets/arcade/train/masks/*"  /home/jupyter/arc
 gsutil -m cp -r "${GCS_BUCKET}/datasets/arcade/val/images/*"   /home/jupyter/arcade_val/images/
 gsutil -m cp -r "${GCS_BUCKET}/datasets/arcade/val/masks/*"    /home/jupyter/arcade_val/masks/
 
-# ── Stage 1: Generate soft labels from teacher ────────────────────────────────
-echo "============================================================"
-echo " Stage 1: Soft label generation — $(date)"
-echo "============================================================"
+# ── Train students (soft labels generated on-the-fly from HF teacher) ────────
 export PYTHONPATH="/opt/MedSAM2:${PYTHONPATH:-}"
 cd /opt/SAM2/distill
-python3 stage1_softlabels.py
 
-# ── Stage 2: Train MobileSAM student ─────────────────────────────────────────
 echo "============================================================"
 echo " Stage 2a: MobileSAM distillation — $(date)"
 echo "============================================================"
 python3 distill_student.py --student mobilesam --ablation 4
 
-# ── Stage 3: Train RepViT-SAM student ────────────────────────────────────────
 echo "============================================================"
 echo " Stage 2b: RepViT-SAM distillation — $(date)"
 echo "============================================================"

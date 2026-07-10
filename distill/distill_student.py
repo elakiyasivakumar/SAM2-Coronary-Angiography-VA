@@ -28,11 +28,13 @@ from PIL import Image
 # ── paths ────────────────────────────────────────────────────────────────────
 BUCKET        = "gs://coronary-angio-v2"
 DATA_DIR      = "/home/jupyter/arcade_train"
-SOFT_DIR      = "/home/jupyter/soft_labels"
+SOFT_DIR      = "/tmp/soft_labels"   # generated at runtime from HF teacher
 MOBILE_CKPT   = "/home/jupyter/mobile_sam.pt"
 DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_SIZE    = 512   # teacher / repvit input size
 MOBILE_SIZE   = 1024  # MobileSAM's native input size
+HIRES         = MODEL_SIZE // 4
+BB_FEAT_SIZES = [[HIRES // (2**k)] * 2 for k in range(3)]
 
 # ── augmentation ─────────────────────────────────────────────────────────────
 AUG_TRANSFORMS = [
@@ -57,6 +59,86 @@ IMG_NORM_1024 = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
+
+
+# ── teacher (for on-the-fly soft label generation) ───────────────────────────
+def load_teacher(ckpt_path):
+    import sys as _sys
+    for p in ["/opt/MedSAM2", "/home/jupyter/MedSAM2"]:
+        if os.path.isdir(p) and p not in _sys.path:
+            _sys.path.insert(0, p)
+    from sam2.build_sam import build_sam2
+    model = build_sam2("configs/sam2.1_hiera_t512.yaml", ckpt_path, device=DEVICE)
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad_(False)
+    return model
+
+
+def _run_teacher_batch(model, imgs_t, points_list):
+    B = imgs_t.shape[0]
+    imgs_dev = imgs_t.to(DEVICE)
+    autocast_ctx = (torch.autocast(device_type="cuda", dtype=torch.float16)
+                    if DEVICE == "cuda" else torch.no_grad())
+    with torch.no_grad(), autocast_ctx:
+        backbone_out = model.forward_image(imgs_dev)
+        _, vision_feats, _, _ = model._prepare_backbone_features(backbone_out)
+        if model.directly_add_no_mem_embed:
+            vision_feats[-1] = vision_feats[-1] + model.no_mem_embed
+        feats = [
+            feat.permute(1, 2, 0).view(B, -1, *fs)
+            for feat, fs in zip(vision_feats[::-1], BB_FEAT_SIZES[::-1])
+        ][::-1]
+        image_embed  = feats[-1]
+        high_res_feats = feats[:-1]
+        logits_list = []
+        for i, (cx, cy) in enumerate(points_list):
+            pt = torch.tensor([[[cx / MODEL_SIZE * MODEL_SIZE,
+                                  cy / MODEL_SIZE * MODEL_SIZE]]],
+                               dtype=torch.float32, device=DEVICE)
+            pt_label = torch.ones(1, 1, dtype=torch.int, device=DEVICE)
+            sparse_emb, dense_emb = model.sam_prompt_encoder(
+                points=(pt, pt_label), boxes=None, masks=None)
+            low_res, _, _, _ = model.sam_mask_decoder(
+                image_embeddings=image_embed[i].unsqueeze(0),
+                image_pe=model.sam_prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse_emb,
+                dense_prompt_embeddings=dense_emb,
+                multimask_output=False,
+                repeat_image=False,
+                high_res_features=[f[i].unsqueeze(0) for f in high_res_feats],
+            )
+            logits_list.append(low_res.cpu().float())
+    return logits_list  # list of [1, 1, 256, 256]
+
+
+def generate_soft_labels(teacher, img_paths, mask_paths, out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    TBATCH = 8 if DEVICE == "cuda" else 4
+    done = 0
+    for start in range(0, len(img_paths), TBATCH):
+        b_imgs, b_masks = img_paths[start:start+TBATCH], mask_paths[start:start+TBATCH]
+        imgs_t, pts, stems = [], [], []
+        for ip, mp in zip(b_imgs, b_masks):
+            stem = os.path.splitext(os.path.basename(ip))[0]
+            if os.path.exists(os.path.join(out_dir, f"{stem}_logits.npy")):
+                done += 1
+                continue
+            img  = Image.open(ip).convert("RGB")
+            mask = np.array(Image.open(mp).convert("L"))
+            ys, xs = np.where(mask > 0)
+            cx = int(xs.mean()) if len(xs) else mask.shape[1] // 2
+            cy = int(ys.mean()) if len(ys) else mask.shape[0] // 2
+            imgs_t.append(IMG_NORM_512(img))
+            pts.append((cx, cy))
+            stems.append(stem)
+        if not stems:
+            continue
+        for stem, logits in zip(stems, _run_teacher_batch(teacher, torch.stack(imgs_t), pts)):
+            np.save(os.path.join(out_dir, f"{stem}_logits.npy"),
+                    logits[0].numpy().astype(np.float16))
+            done += 1
+        print(f"  Soft labels: {done}/{len(img_paths)}", flush=True)
 
 
 # ── dataset ───────────────────────────────────────────────────────────────────
@@ -349,18 +431,20 @@ def train(args):
         hf_hub_download(repo_id="Elakiya17/CA-SAM2", filename="medsam2_arcade_v2.pt",
                         local_dir="/home/jupyter")
 
-    # download soft labels
-    if not os.path.exists(SOFT_DIR) or len(glob.glob(SOFT_DIR + "/*.npy")) < 100:
-        os.makedirs(SOFT_DIR, exist_ok=True)
-        subprocess.run(["gsutil", "-m", "cp", "-r",
-                        f"{BUCKET}/soft_labels/train/*", SOFT_DIR + "/"],
-                       check=True)
+    # generate soft labels from HF teacher (cached to /tmp after first run)
+    img_paths_all  = sorted(glob.glob(DATA_DIR + "/images/*.png"))
+    mask_paths_all = sorted(glob.glob(DATA_DIR + "/masks/*.png"))
+    if not os.path.exists(SOFT_DIR) or len(glob.glob(SOFT_DIR + "/*.npy")) < len(img_paths_all):
+        print("Generating soft labels from HF teacher (one-time)...")
+        teacher = load_teacher(teacher_ckpt)
+        generate_soft_labels(teacher, img_paths_all, mask_paths_all, SOFT_DIR)
+        del teacher
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
+        print("Soft labels ready.")
 
     img_size   = MOBILE_SIZE if args.student == "mobilesam" else MODEL_SIZE
-    img_paths  = sorted(glob.glob(DATA_DIR + "/images/*.png"))
-    mask_paths = sorted(glob.glob(DATA_DIR + "/masks/*.png"))
-
-    ds  = DistillDataset(img_paths, mask_paths, SOFT_DIR, img_size=img_size)
+    ds  = DistillDataset(img_paths_all, mask_paths_all, SOFT_DIR, img_size=img_size)
     dl  = DataLoader(ds, batch_size=BATCH, shuffle=True,
                      num_workers=4, pin_memory=True, drop_last=True)
     print(f"Dataset: {len(ds)} samples, {len(dl)} batches/epoch")
