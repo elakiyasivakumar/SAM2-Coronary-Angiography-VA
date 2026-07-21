@@ -26,7 +26,8 @@ apt-get install -y -q git ffmpeg libgl1 libglib2.0-0
 # ── Python dependencies ───────────────────────────────────────────────────────
 pip3 install -q --upgrade pip
 pip3 install -q scikit-image scipy opencv-python-headless huggingface_hub \
-               Pillow numpy mobile-sam timm
+               Pillow numpy timm
+pip3 install -q git+https://github.com/ChaoningZhang/MobileSAM.git
 
 # ── MedSAM2 ──────────────────────────────────────────────────────────────────
 if [ ! -d /opt/MedSAM2 ]; then
