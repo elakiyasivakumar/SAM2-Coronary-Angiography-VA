@@ -246,6 +246,8 @@ def soft_cldice_loss(probs, target, smooth=1.0):
 
 
 def combined_loss(logits, gt, pos_weight, cldice_w):
+    if gt.shape != logits.shape:
+        gt = F.interpolate(gt, size=logits.shape[-2:], mode="nearest")
     wbce   = F.binary_cross_entropy_with_logits(
         logits, gt, pos_weight=pos_weight.to(logits.device))
     d      = dice_loss(logits, gt)
@@ -266,6 +268,9 @@ def distill_loss(student_logits, teacher_logits, gt, pos_weight, cldice_w, use_k
 
     if use_kd:
         soft_targets = torch.sigmoid(teacher_logits)
+        if soft_targets.shape != student_logits.shape:
+            soft_targets = F.interpolate(soft_targets, size=student_logits.shape[-2:],
+                                         mode="bilinear", align_corners=False)
         kd = F.binary_cross_entropy_with_logits(
             student_logits, soft_targets,
             pos_weight=pos_weight.to(student_logits.device))
