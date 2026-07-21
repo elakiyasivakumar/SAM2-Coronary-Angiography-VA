@@ -67,6 +67,11 @@ def load_teacher(ckpt_path):
     for p in ["/opt/MedSAM2", "/home/jupyter/MedSAM2"]:
         if os.path.isdir(p) and p not in _sys.path:
             _sys.path.insert(0, p)
+    # build_sam2 expects {"model": state_dict} — wrap if raw
+    sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    if not (isinstance(sd, dict) and "model" in sd):
+        torch.save({"model": sd}, ckpt_path)
+        print("Checkpoint wrapped for build_sam2")
     from sam2.build_sam import build_sam2
     model = build_sam2("configs/sam2.1_hiera_t512.yaml", ckpt_path, device=DEVICE)
     model.eval()
