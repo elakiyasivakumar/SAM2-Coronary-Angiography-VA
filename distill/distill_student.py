@@ -427,7 +427,7 @@ def upload_async(local, remote):
 # ── training ──────────────────────────────────────────────────────────────────
 def train(args):
     EPOCHS     = 30
-    BATCH      = 16
+    BATCH      = int(os.environ.get("BATCH_SIZE", 4))
     BASE_LR    = 3e-4
     WARMUP_EP  = 3
     WD         = 0.01
