@@ -371,6 +371,8 @@ class RepViTSAM(nn.Module):
         B = imgs.shape[0]
         feats = self.encoder(imgs)[-1]      # [B, C, H/16, W/16]
         embed = self.neck(feats)            # [B, 256, H/16, W/16]
+        # upsample to 64×64 to match MobileSAM prompt encoder's expected size
+        embed = F.interpolate(embed, size=(64, 64), mode="bilinear", align_corners=False)
 
         logits_list = []
         for i, (cx, cy) in enumerate(pts):
