@@ -13,6 +13,10 @@ Usage:
 
 Loss:
   L = 0.5 * KD_BCE(soft_logits) + 0.4 * (0.5*Dice + 0.2*wBCE) + clDice_w * clDice
+
+Data split (v3+):
+  900 train / 100 val (for early stopping) from 1000 ARCADE train images (seed=42)
+  200 ARCADE val images = held-out test set (never touched during training)
 """
 
 import argparse, os, sys, glob, subprocess, random, math, time
@@ -23,7 +27,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 # ── paths ────────────────────────────────────────────────────────────────────
 BUCKET        = "gs://coronary-angio-v2"
@@ -37,16 +41,36 @@ HIRES         = MODEL_SIZE // 4
 BB_FEAT_SIZES = [[HIRES // (2**k)] * 2 for k in range(3)]
 
 # ── augmentation ─────────────────────────────────────────────────────────────
-AUG_TRANSFORMS = [
-    lambda img, mask: (img, mask),
-    lambda img, mask: (img.transpose(Image.FLIP_LEFT_RIGHT),
-                       mask.transpose(Image.FLIP_LEFT_RIGHT)),
-    lambda img, mask: (img.transpose(Image.FLIP_TOP_BOTTOM),
-                       mask.transpose(Image.FLIP_TOP_BOTTOM)),
-    lambda img, mask: (img.rotate(20), mask.rotate(20)),
-    lambda img, mask: (img.transpose(Image.FLIP_LEFT_RIGHT).rotate(20),
-                       mask.transpose(Image.FLIP_LEFT_RIGHT).rotate(20)),
-]
+# Geometric aug by index — applied identically to image, mask, and soft label
+# so there's no label/prediction misalignment after flipping/rotating.
+NUM_GEOM_AUGS = 5  # 0=none 1=flip_lr 2=flip_tb 3=rot20 4=flip_lr+rot20
+
+def _geom_pil(pil_img, aug_idx):
+    if aug_idx == 0: return pil_img
+    if aug_idx == 1: return pil_img.transpose(Image.FLIP_LEFT_RIGHT)
+    if aug_idx == 2: return pil_img.transpose(Image.FLIP_TOP_BOTTOM)
+    if aug_idx == 3: return pil_img.rotate(20)
+    if aug_idx == 4: return pil_img.transpose(Image.FLIP_LEFT_RIGHT).rotate(20)
+    return pil_img
+
+def _geom_np(arr_2d, aug_idx):
+    """Apply geometric aug to a 2D float array (for soft labels)."""
+    if aug_idx == 0: return arr_2d
+    pil = Image.fromarray(arr_2d.astype(np.float32), mode='F')
+    return np.array(_geom_pil(pil, aug_idx), dtype=np.float32)
+
+def random_color_aug(img_pil):
+    """Random brightness, contrast, and Gaussian noise — X-ray exposure simulation."""
+    if random.random() < 0.6:
+        img_pil = ImageEnhance.Brightness(img_pil).enhance(random.uniform(0.7, 1.35))
+    if random.random() < 0.6:
+        img_pil = ImageEnhance.Contrast(img_pil).enhance(random.uniform(0.7, 1.35))
+    if random.random() < 0.4:
+        arr   = np.array(img_pil).astype(np.float32)
+        sigma = random.uniform(4, 18)
+        arr   = np.clip(arr + np.random.normal(0, sigma, arr.shape), 0, 255).astype(np.uint8)
+        img_pil = Image.fromarray(arr)
+    return img_pil
 
 IMG_NORM_512 = transforms.Compose([
     transforms.Resize((MODEL_SIZE, MODEL_SIZE)),
@@ -160,30 +184,37 @@ def centroid_click(mask_np, jitter=5):
 
 
 class DistillDataset(Dataset):
-    def __init__(self, img_paths, mask_paths, soft_dir, img_size=512):
+    def __init__(self, img_paths, mask_paths, soft_dir, img_size=512, color_aug=False):
         pairs = []
         for ip, mp in zip(img_paths, mask_paths):
             stem = os.path.splitext(os.path.basename(ip))[0]
             soft = os.path.join(soft_dir, f"{stem}_logits.npy")
             if os.path.exists(soft):
-                for aug_fn in AUG_TRANSFORMS:
-                    pairs.append((ip, mp, soft, aug_fn, stem))
-        self.pairs    = pairs
-        self.img_norm = IMG_NORM_1024 if img_size == 1024 else IMG_NORM_512
-        self.img_size = img_size
+                for aug_idx in range(NUM_GEOM_AUGS):
+                    pairs.append((ip, mp, soft, aug_idx, stem))
+        self.pairs     = pairs
+        self.img_norm  = IMG_NORM_1024 if img_size == 1024 else IMG_NORM_512
+        self.img_size  = img_size
+        self.color_aug = color_aug
 
     def __len__(self):
         return len(self.pairs)
 
     def __getitem__(self, idx):
-        ip, mp, soft_path, aug_fn, stem = self.pairs[idx]
+        ip, mp, soft_path, aug_idx, stem = self.pairs[idx]
         img  = Image.open(ip).convert("RGB")
         mask = Image.open(mp).convert("L")
-        img, mask = aug_fn(img, mask)
+
+        # same geometric transform applied to image, mask, AND soft label
+        img  = _geom_pil(img,  aug_idx)
+        mask = _geom_pil(mask, aug_idx)
+
+        # color/noise augmentation on image only (no soft label alignment needed)
+        if self.color_aug:
+            img = random_color_aug(img)
 
         mask_np  = np.array(mask)
         cx, cy   = centroid_click(mask_np, jitter=5)
-        # normalise click to [0, img_size]
         h, w     = mask_np.shape
         cx_n     = cx / w * self.img_size
         cy_n     = cy / h * self.img_size
@@ -192,8 +223,10 @@ class DistillDataset(Dataset):
         mask_256 = np.array(mask.resize((256, 256), Image.NEAREST))
         mask_t   = torch.from_numpy((mask_256 > 0).astype(np.float32)).unsqueeze(0)
 
-        soft     = torch.from_numpy(
-            np.load(soft_path).astype(np.float32))  # [1, 256, 256]
+        # soft label: same geometric aug applied for alignment
+        soft_raw = np.load(soft_path).astype(np.float32)  # [1, 256, 256]
+        soft_aug = _geom_np(soft_raw[0], aug_idx)          # [256, 256]
+        soft     = torch.from_numpy(soft_aug).unsqueeze(0) # [1, 256, 256]
 
         return img_t, mask_t, torch.tensor([cx_n, cy_n], dtype=torch.float32), soft
 
@@ -428,8 +461,8 @@ def upload_async(local, remote):
 
 # ── training ──────────────────────────────────────────────────────────────────
 def train(args):
-    EPOCHS     = int(os.environ.get("MAX_EPOCHS", 75))
-    PATIENCE   = int(os.environ.get("ES_PATIENCE", 7))
+    EPOCHS     = int(os.environ.get("MAX_EPOCHS", 50))
+    PATIENCE   = int(os.environ.get("ES_PATIENCE", 10))
     BATCH      = int(os.environ.get("BATCH_SIZE", 4))
     BASE_LR    = 3e-4
     WARMUP_EP  = 3
@@ -456,11 +489,27 @@ def train(args):
             torch.cuda.empty_cache()
         print("Soft labels ready.")
 
-    img_size   = MOBILE_SIZE if args.student == "mobilesam" else MODEL_SIZE
-    ds  = DistillDataset(img_paths_all, mask_paths_all, SOFT_DIR, img_size=img_size)
+    # ── 900/100 split from 1000 training images (seed=42 for reproducibility) ──
+    # The 200 ARCADE val images are the held-out test set and are NEVER used here.
+    indices = list(range(len(img_paths_all)))
+    random.Random(42).shuffle(indices)
+    n_val    = 100
+    val_idx  = indices[:n_val]
+    trn_idx  = indices[n_val:]
+    img_paths_train  = [img_paths_all[i]  for i in trn_idx]
+    mask_paths_train = [mask_paths_all[i] for i in trn_idx]
+    img_paths_val    = [img_paths_all[i]  for i in val_idx]
+    mask_paths_val   = [mask_paths_all[i] for i in val_idx]
+    print(f"Split: {len(img_paths_train)} train / {len(img_paths_val)} val (early-stop) / "
+          f"200 held-out test (arcade_test, never touched)")
+
+    img_size = MOBILE_SIZE if args.student == "mobilesam" else MODEL_SIZE
+    ds  = DistillDataset(img_paths_train, mask_paths_train, SOFT_DIR,
+                         img_size=img_size, color_aug=True)
     dl  = DataLoader(ds, batch_size=BATCH, shuffle=True,
                      num_workers=4, pin_memory=True, drop_last=True)
-    print(f"Dataset: {len(ds)} samples, {len(dl)} batches/epoch")
+    print(f"Train dataset: {len(ds)} samples ({len(img_paths_train)} images × {NUM_GEOM_AUGS} geom augs + color aug), "
+          f"{len(dl)} batches/epoch")
 
     # build model
     if args.student == "mobilesam":
@@ -480,22 +529,21 @@ def train(args):
     use_kd    = args.ablation >= 2
     use_cldice = args.ablation >= 3
 
-    version   = os.environ.get("MODEL_VERSION", "v2")
+    version   = os.environ.get("MODEL_VERSION", "v3")
     suffix    = f"{args.student}_abl{args.ablation}_{version}"
     ckpt_path = f"/home/jupyter/{suffix}.pt"
     best_dice  = -1.0
     no_improve = 0
 
-    val_img_paths  = sorted(glob.glob("/home/jupyter/arcade_val/images/*.png"))
-    val_mask_paths = sorted(glob.glob("/home/jupyter/arcade_val/masks/*.png"))
-    img_norm_val   = IMG_NORM_1024 if args.student == "mobilesam" else IMG_NORM_512
-    val_img_size   = MOBILE_SIZE if args.student == "mobilesam" else MODEL_SIZE
+    # val set = 100-image internal split from train (early stopping signal only)
+    img_norm_val = IMG_NORM_1024 if args.student == "mobilesam" else IMG_NORM_512
+    val_img_size = MOBILE_SIZE if args.student == "mobilesam" else MODEL_SIZE
 
     def quick_val_dice(model):
         model.eval()
         scores = []
         with torch.no_grad():
-            for ip, mp in zip(val_img_paths, val_mask_paths):
+            for ip, mp in zip(img_paths_val, mask_paths_val):
                 img  = Image.open(ip).convert("RGB")
                 mask = np.array(Image.open(mp).convert("L"))
                 ys, xs = np.where(mask > 0)
@@ -589,9 +637,13 @@ def train(args):
 
 # ── evaluation ────────────────────────────────────────────────────────────────
 def evaluate(args):
-    from stage1_softlabels import centroid_click as cc
-    img_paths  = sorted(glob.glob("/home/jupyter/arcade_val/images/*.png"))
-    mask_paths = sorted(glob.glob("/home/jupyter/arcade_val/masks/*.png"))
+    # Evaluate on the 200 held-out ARCADE images (arcade_test).
+    # These images are never downloaded to the training VM during train().
+    img_paths  = sorted(glob.glob("/home/jupyter/arcade_test/images/*.png"))
+    mask_paths = sorted(glob.glob("/home/jupyter/arcade_test/masks/*.png"))
+    if not img_paths:
+        raise RuntimeError("arcade_test not found — did the setup script download it?")
+    cc = centroid_click  # reuse the function defined above
 
     teacher_ckpt = "/home/jupyter/medsam2_arcade_v2.pt"
     version   = os.environ.get("MODEL_VERSION", "")
@@ -618,7 +670,7 @@ def evaluate(args):
         for ip, mp in zip(img_paths, mask_paths):
             img    = Image.open(ip).convert("RGB")
             mask   = np.array(Image.open(mp).convert("L"))
-            cx, cy = cc(mask)
+            cx, cy = cc(mask, jitter=0)
 
             img_t  = img_norm(img).unsqueeze(0).to(DEVICE)
             pts    = [(torch.tensor(cx / mask.shape[1] * img_size),
@@ -649,7 +701,7 @@ def evaluate(args):
     mean_dice = np.mean(dice_scores)
     std_dice  = np.std(dice_scores)
     mean_iou  = np.mean(iou_scores)
-    print(f"\n=== {suffix} — ARCADE val (200 images) ===")
+    print(f"\n=== {suffix} — HELD-OUT TEST SET (200 ARCADE val images, never seen during training) ===")
     print(f"  Dice: {mean_dice:.3f} ± {std_dice:.3f}")
     print(f"  IoU:  {mean_iou:.3f}")
 
