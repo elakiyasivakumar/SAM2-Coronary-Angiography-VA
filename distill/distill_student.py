@@ -428,7 +428,8 @@ def upload_async(local, remote):
 
 # ── training ──────────────────────────────────────────────────────────────────
 def train(args):
-    EPOCHS     = 30
+    EPOCHS     = int(os.environ.get("MAX_EPOCHS", 75))
+    PATIENCE   = int(os.environ.get("ES_PATIENCE", 7))
     BATCH      = int(os.environ.get("BATCH_SIZE", 4))
     BASE_LR    = 3e-4
     WARMUP_EP  = 3
@@ -479,9 +480,43 @@ def train(args):
     use_kd    = args.ablation >= 2
     use_cldice = args.ablation >= 3
 
-    suffix    = f"{args.student}_abl{args.ablation}"
+    version   = os.environ.get("MODEL_VERSION", "v2")
+    suffix    = f"{args.student}_abl{args.ablation}_{version}"
     ckpt_path = f"/home/jupyter/{suffix}.pt"
-    best_loss = float("inf")
+    best_dice  = -1.0
+    no_improve = 0
+
+    val_img_paths  = sorted(glob.glob("/home/jupyter/arcade_val/images/*.png"))
+    val_mask_paths = sorted(glob.glob("/home/jupyter/arcade_val/masks/*.png"))
+    img_norm_val   = IMG_NORM_1024 if args.student == "mobilesam" else IMG_NORM_512
+    val_img_size   = MOBILE_SIZE if args.student == "mobilesam" else MODEL_SIZE
+
+    def quick_val_dice(model):
+        model.eval()
+        scores = []
+        with torch.no_grad():
+            for ip, mp in zip(val_img_paths, val_mask_paths):
+                img  = Image.open(ip).convert("RGB")
+                mask = np.array(Image.open(mp).convert("L"))
+                ys, xs = np.where(mask > 0)
+                cx = int(xs.mean()) if len(xs) else mask.shape[1] // 2
+                cy = int(ys.mean()) if len(ys) else mask.shape[0] // 2
+                img_t = img_norm_val(img).unsqueeze(0).to(DEVICE)
+                pts   = [(torch.tensor(cx / mask.shape[1] * val_img_size),
+                          torch.tensor(cy / mask.shape[0] * val_img_size))]
+                autocast_ctx = (torch.autocast(device_type="cuda", dtype=torch.float16)
+                                if DEVICE == "cuda" else torch.no_grad())
+                with autocast_ctx:
+                    logits = (forward_mobilesam(model, img_t, pts)
+                              if args.student == "mobilesam" else model(img_t, pts))
+                pred = (logits[0, 0].cpu().numpy() > 0.0).astype(np.uint8)
+                pred = np.array(Image.fromarray(pred * 255).resize(
+                    (mask.shape[1], mask.shape[0]), Image.NEAREST)) > 127
+                gt   = mask > 0
+                denom = pred.sum() + gt.sum()
+                scores.append((2 * (pred & gt).sum() / denom) if denom > 0 else 1.0)
+        model.train()
+        return float(np.mean(scores))
 
     for epoch in range(1, EPOCHS + 1):
         # warmup
@@ -533,14 +568,22 @@ def train(args):
               f"cldice_w={cldice_w:.3f}  "
               f"t={time.time()-t0:.0f}s", flush=True)
 
-        if avg < best_loss:
-            best_loss = avg
+        val_dice = quick_val_dice(model)
+        print(f"  → val Dice: {val_dice:.4f}  best: {best_dice:.4f}  patience: {no_improve}/{PATIENCE}", flush=True)
+
+        if val_dice > best_dice:
+            best_dice  = val_dice
+            no_improve = 0
             torch.save(model.state_dict(), ckpt_path)
-            upload_async(ckpt_path,
-                         f"{BUCKET}/checkpoints/{suffix}.pt")
+            upload_async(ckpt_path, f"{BUCKET}/checkpoints/{suffix}.pt")
+        else:
+            no_improve += 1
+            if no_improve >= PATIENCE:
+                print(f"Early stopping at epoch {epoch} (no improvement for {PATIENCE} epochs)")
+                break
 
     _gcs_q.join()
-    print(f"Training complete. Best loss: {best_loss:.4f}")
+    print(f"Training complete. Best val Dice: {best_dice:.4f}")
     print(f"Checkpoint: {BUCKET}/checkpoints/{suffix}.pt")
 
 
