@@ -32,7 +32,7 @@ gsutil -m cp -r gs://coronary-angio-v2/datasets/arcade/val/masks/*    /home/jupy
 
 export PYTHONPATH=/opt/MedSAM2
 export MAX_EPOCHS=75
-export ES_PATIENCE=7
+export ES_PATIENCE=10
 export BATCH_SIZE=4
 export MODEL_VERSION=v2
 

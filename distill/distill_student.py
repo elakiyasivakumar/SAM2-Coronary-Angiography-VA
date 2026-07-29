@@ -594,7 +594,8 @@ def evaluate(args):
     mask_paths = sorted(glob.glob("/home/jupyter/arcade_val/masks/*.png"))
 
     teacher_ckpt = "/home/jupyter/medsam2_arcade_v2.pt"
-    suffix    = f"{args.student}_abl{args.ablation}"
+    version   = os.environ.get("MODEL_VERSION", "")
+    suffix    = f"{args.student}_abl{args.ablation}" + (f"_{version}" if version else "")
     ckpt_path = f"/home/jupyter/{suffix}.pt"
     if not os.path.exists(ckpt_path):
         subprocess.run(["gsutil", "cp",
