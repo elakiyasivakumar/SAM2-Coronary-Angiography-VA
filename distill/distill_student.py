@@ -36,7 +36,7 @@ SOFT_DIR      = "/tmp/soft_labels"   # generated at runtime from HF teacher
 MOBILE_CKPT   = "/home/jupyter/mobile_sam.pt"
 DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_SIZE    = 512   # teacher / repvit input size
-MOBILE_SIZE   = 1024  # MobileSAM's native input size
+MOBILE_SIZE   = int(os.environ.get("MOBILE_SIZE", 1024))  # 1024 default, set to 512 to match teacher resolution
 HIRES         = MODEL_SIZE // 4
 BB_FEAT_SIZES = [[HIRES // (2**k)] * 2 for k in range(3)]
 
@@ -349,7 +349,9 @@ def build_mobilesam(teacher_ckpt):
 
 def forward_mobilesam(model, imgs, pts):
     B = imgs.shape[0]
-    image_embed = model.image_encoder(imgs)  # [B, 256, 64, 64]
+    image_embed = model.image_encoder(imgs)  # [B, 256, 64, 64] at 1024; [B, 256, 32, 32] at 512
+    if image_embed.shape[-1] != 64:
+        image_embed = F.interpolate(image_embed, size=(64, 64), mode="bilinear", align_corners=False)
     logits_list = []
     for i, (cx, cy) in enumerate(pts):
         pt = torch.tensor([[[cx.item(), cy.item()]]],
