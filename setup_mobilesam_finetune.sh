@@ -36,7 +36,7 @@ gsutil -m cp -r gs://coronary-angio-v2/datasets/arcade/val/images/* /home/jupyte
 gsutil -m cp -r gs://coronary-angio-v2/datasets/arcade/val/masks/*  /home/jupyter/arcade_test/masks/
 
 export PYTHONPATH=/opt/MedSAM2
-export MAX_EPOCHS=50
+export MAX_EPOCHS=30
 export ES_PATIENCE=10
 export BATCH_SIZE=4
 export MODEL_VERSION=finetune

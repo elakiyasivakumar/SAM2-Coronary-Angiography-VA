@@ -184,12 +184,13 @@ def centroid_click(mask_np, jitter=5):
 
 
 class DistillDataset(Dataset):
-    def __init__(self, img_paths, mask_paths, soft_dir, img_size=512, color_aug=False):
+    def __init__(self, img_paths, mask_paths, soft_dir, img_size=512,
+                 color_aug=False, require_soft=True):
         pairs = []
         for ip, mp in zip(img_paths, mask_paths):
             stem = os.path.splitext(os.path.basename(ip))[0]
             soft = os.path.join(soft_dir, f"{stem}_logits.npy")
-            if os.path.exists(soft):
+            if not require_soft or os.path.exists(soft):
                 for aug_idx in range(NUM_GEOM_AUGS):
                     pairs.append((ip, mp, soft, aug_idx, stem))
         self.pairs     = pairs
@@ -223,10 +224,13 @@ class DistillDataset(Dataset):
         mask_256 = np.array(mask.resize((256, 256), Image.NEAREST))
         mask_t   = torch.from_numpy((mask_256 > 0).astype(np.float32)).unsqueeze(0)
 
-        # soft label: same geometric aug applied for alignment
-        soft_raw = np.load(soft_path).astype(np.float32)  # [1, 256, 256]
-        soft_aug = _geom_np(soft_raw[0], aug_idx)          # [256, 256]
-        soft     = torch.from_numpy(soft_aug).unsqueeze(0) # [1, 256, 256]
+        # soft label: same geometric aug applied for alignment (zeros if file absent)
+        if os.path.exists(soft_path):
+            soft_raw = np.load(soft_path).astype(np.float32)  # [1, 256, 256]
+            soft_aug = _geom_np(soft_raw[0], aug_idx)
+        else:
+            soft_aug = np.zeros((256, 256), dtype=np.float32)
+        soft = torch.from_numpy(soft_aug).unsqueeze(0)  # [1, 256, 256]
 
         return img_t, mask_t, torch.tensor([cx_n, cy_n], dtype=torch.float32), soft
 
@@ -477,17 +481,24 @@ def train(args):
         hf_hub_download(repo_id="Elakiya17/CA-SAM2", filename="medsam2_arcade_v2.pt",
                         local_dir="/home/jupyter")
 
-    # generate soft labels from HF teacher (cached to /tmp after first run)
+    use_kd     = args.ablation >= 2
+    use_cldice = args.ablation >= 3
+
     img_paths_all  = sorted(glob.glob(DATA_DIR + "/images/*.png"))
     mask_paths_all = sorted(glob.glob(DATA_DIR + "/masks/*.png"))
-    if not os.path.exists(SOFT_DIR) or len(glob.glob(SOFT_DIR + "/*.npy")) < len(img_paths_all):
-        print("Generating soft labels from HF teacher (one-time)...")
-        teacher = load_teacher(teacher_ckpt)
-        generate_soft_labels(teacher, img_paths_all, mask_paths_all, SOFT_DIR)
-        del teacher
-        if DEVICE == "cuda":
-            torch.cuda.empty_cache()
-        print("Soft labels ready.")
+
+    # only generate soft labels when KD loss is actually used
+    if use_kd:
+        if not os.path.exists(SOFT_DIR) or len(glob.glob(SOFT_DIR + "/*.npy")) < len(img_paths_all):
+            print("Generating soft labels from HF teacher (one-time)...")
+            teacher = load_teacher(teacher_ckpt)
+            generate_soft_labels(teacher, img_paths_all, mask_paths_all, SOFT_DIR)
+            del teacher
+            if DEVICE == "cuda":
+                torch.cuda.empty_cache()
+            print("Soft labels ready.")
+    else:
+        print("Ablation=1 (GT only) — skipping soft label generation.")
 
     # ── 900/100 split from 1000 training images (seed=42 for reproducibility) ──
     # The 200 ARCADE val images are the held-out test set and are NEVER used here.
@@ -505,7 +516,7 @@ def train(args):
 
     img_size = MOBILE_SIZE if args.student == "mobilesam" else MODEL_SIZE
     ds  = DistillDataset(img_paths_train, mask_paths_train, SOFT_DIR,
-                         img_size=img_size, color_aug=True)
+                         img_size=img_size, color_aug=True, require_soft=use_kd)
     dl  = DataLoader(ds, batch_size=BATCH, shuffle=True,
                      num_workers=4, pin_memory=True, drop_last=True)
     print(f"Train dataset: {len(ds)} samples ({len(img_paths_train)} images × {NUM_GEOM_AUGS} geom augs + color aug), "
@@ -525,9 +536,6 @@ def train(args):
     optimizer = optim.AdamW(trainable, lr=BASE_LR, weight_decay=WD)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
     scaler    = torch.amp.GradScaler("cuda", enabled=(DEVICE == "cuda"))
-
-    use_kd    = args.ablation >= 2
-    use_cldice = args.ablation >= 3
 
     version   = os.environ.get("MODEL_VERSION", "v3")
     suffix    = f"{args.student}_abl{args.ablation}_{version}"
