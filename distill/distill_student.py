@@ -444,6 +444,34 @@ def build_repvitsam(teacher_ckpt):
     return model
 
 
+# ── feature adapter (training-only, discarded at inference) ──────────────────
+class FeatureAdapter(nn.Module):
+    """Projects student image embedding into teacher feature space via 1×1 conv.
+    Added to the optimizer during training; never saved with the student checkpoint."""
+    def __init__(self, in_ch=256, out_ch=256):
+        super().__init__()
+        self.proj = nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False)
+
+    def forward(self, x):
+        return self.proj(x)
+
+
+def extract_teacher_embed(teacher, imgs_1024):
+    """Run teacher encoder on a batch, return image_embed [B, 256, H, W]."""
+    B = imgs_1024.shape[0]
+    imgs_512 = F.interpolate(imgs_1024, size=(MODEL_SIZE, MODEL_SIZE),
+                             mode="bilinear", align_corners=False)
+    backbone_out = teacher.forward_image(imgs_512)
+    _, vision_feats, _, _ = teacher._prepare_backbone_features(backbone_out)
+    if teacher.directly_add_no_mem_embed:
+        vision_feats[-1] = vision_feats[-1] + teacher.no_mem_embed
+    feats = [
+        feat.permute(1, 2, 0).view(B, -1, *fs)
+        for feat, fs in zip(vision_feats[::-1], BB_FEAT_SIZES[::-1])
+    ][::-1]
+    return feats[-1].float()  # [B, 256, 32, 32]
+
+
 # ── GCS uploader (background thread, verbatim pattern from arcade_v2.ipynb) ──
 import threading, queue
 
@@ -531,8 +559,23 @@ def train(args):
         model = build_repvitsam(teacher_ckpt)
 
     trainable = [p for p in model.parameters() if p.requires_grad]
-    n_train   = sum(p.numel() for p in trainable) / 1e6
-    n_total   = sum(p.numel() for p in model.parameters()) / 1e6
+
+    # feature KD: adapter + frozen teacher encoder
+    use_feat_kd = bool(int(os.environ.get("USE_FEAT_KD", 0)))
+    FEAT_KD_W   = float(os.environ.get("FEAT_KD_W", 0.1))
+    feat_adapter = None
+    teacher_feat = None
+    if use_feat_kd:
+        feat_adapter = FeatureAdapter(256, 256).to(DEVICE)
+        trainable   += list(feat_adapter.parameters())
+        teacher_feat = load_teacher(teacher_ckpt)
+        teacher_feat.eval()
+        for p in teacher_feat.parameters():
+            p.requires_grad_(False)
+        print(f"Feature KD enabled — adapter 256→256, weight={FEAT_KD_W}")
+
+    n_train = sum(p.numel() for p in trainable) / 1e6
+    n_total = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"  Trainable: {n_train:.1f}M / {n_total:.1f}M")
 
     optimizer = optim.AdamW(trainable, lr=BASE_LR, weight_decay=WD)
@@ -609,6 +652,20 @@ def train(args):
 
                 loss, _, _ = distill_loss(
                     logits, soft_d, masks_d, pos_weight, cldice_w, use_kd)
+
+                # foreground-weighted encoder feature matching
+                if use_feat_kd and feat_adapter is not None:
+                    with torch.no_grad():
+                        t_embed = extract_teacher_embed(teacher_feat, imgs_d)
+                    s_embed  = model.image_encoder(imgs_d)       # [B, 256, 64, 64]
+                    s_proj   = feat_adapter(s_embed)             # [B, 256, 64, 64]
+                    s_down   = F.interpolate(s_proj, size=t_embed.shape[-2:],
+                                             mode="bilinear", align_corners=False)
+                    fg       = F.interpolate(masks_d, size=t_embed.shape[-2:],
+                                             mode="nearest")
+                    fg_w     = 1.0 + 9.0 * fg                   # 10× weight on vessel pixels
+                    loss_feat = ((s_down - t_embed) ** 2 * fg_w).mean()
+                    loss      = loss + FEAT_KD_W * loss_feat
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
