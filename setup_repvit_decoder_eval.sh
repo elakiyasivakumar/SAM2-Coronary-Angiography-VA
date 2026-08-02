@@ -11,7 +11,8 @@ echo "=== RepViT + CA-SAM2 decoder eval (no training) $(date) ==="
 apt-get install -y -q git python3-pip
 pip3 install -q -U pip setuptools wheel
 pip3 install -q scikit-image scipy opencv-python-headless huggingface_hub timm
-pip3 install -q git+https://github.com/ChaoningZhang/MobileSAM.git
+git clone https://github.com/ChaoningZhang/MobileSAM.git /opt/MobileSAM
+pip3 install -q -e /opt/MobileSAM --no-build-isolation
 
 git clone https://github.com/bowang-lab/MedSAM2.git /opt/MedSAM2
 pip3 install -q -e /opt/MedSAM2
