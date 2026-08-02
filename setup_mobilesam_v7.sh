@@ -10,6 +10,7 @@ trap 'gsutil cp $LOG gs://coronary-angio-v2/results/distillation/mobilesam_v7_ru
 echo "=== MobileSAM v7 (in-path neck adapter + CA-SAM2 decoder, GT only) $(date) ==="
 
 apt-get install -y -q git python3-pip
+pip3 install -q -U pip setuptools wheel
 pip3 install -q scikit-image scipy opencv-python-headless huggingface_hub timm
 pip3 install -q git+https://github.com/ChaoningZhang/MobileSAM.git
 

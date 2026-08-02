@@ -10,6 +10,7 @@ trap 'gsutil cp $LOG gs://coronary-angio-v2/results/distillation/mobilesam_truef
 echo "=== MobileSAM true fine-tune (SA-1B only, no transplant, GT only) $(date) ==="
 
 apt-get install -y -q git python3-pip
+pip3 install -q -U pip setuptools wheel
 pip3 install -q scikit-image scipy opencv-python-headless huggingface_hub timm
 pip3 install -q git+https://github.com/ChaoningZhang/MobileSAM.git
 
