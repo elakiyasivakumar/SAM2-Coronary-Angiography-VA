@@ -16,7 +16,7 @@ git clone https://github.com/ChaoningZhang/MobileSAM.git /opt/MobileSAM
 pip3 install -q -e /opt/MobileSAM --no-build-isolation
 
 git clone https://github.com/bowang-lab/MedSAM2.git /opt/MedSAM2
-pip3 install -q -e /opt/MedSAM2
+pip3 install -q -e /opt/MedSAM2 --no-build-isolation
 git clone https://github.com/elakiyasivakumar/SAM2-Coronary-Angiography-VA.git /opt/SAM2
 
 mkdir -p /home/jupyter

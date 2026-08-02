@@ -8,14 +8,15 @@ trap 'gsutil cp $LOG gs://coronary-angio-v2/results/distillation/repvit_decoder_
 
 echo "=== RepViT + CA-SAM2 decoder eval (no training) $(date) ==="
 
-apt-get install -y -q git python3-pip
+apt-get install -y -q git python3 curl
+curl -sS https://bootstrap.pypa.io/get-pip.py | python3
 pip3 install -q -U pip setuptools wheel
 pip3 install -q scikit-image scipy opencv-python-headless huggingface_hub timm
 git clone https://github.com/ChaoningZhang/MobileSAM.git /opt/MobileSAM
 pip3 install -q -e /opt/MobileSAM --no-build-isolation
 
 git clone https://github.com/bowang-lab/MedSAM2.git /opt/MedSAM2
-pip3 install -q -e /opt/MedSAM2
+pip3 install -q -e /opt/MedSAM2 --no-build-isolation
 git clone https://github.com/elakiyasivakumar/SAM2-Coronary-Angiography-VA.git /opt/SAM2
 
 mkdir -p /home/jupyter
