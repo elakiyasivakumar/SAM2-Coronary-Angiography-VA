@@ -330,19 +330,23 @@ def build_mobilesam(teacher_ckpt):
         ], check=True)
     model = sam_model_registry["vit_t"](checkpoint=MOBILE_CKPT)
 
-    # transplant fine-tuned decoder from teacher
-    teacher_sd = torch.load(teacher_ckpt, map_location="cpu", weights_only=False)
-    if isinstance(teacher_sd, dict) and set(teacher_sd.keys()) == {"model"}:
-        teacher_sd = teacher_sd["model"]
-    decoder_sd  = {k.replace("sam_mask_decoder.", ""): v
-                   for k, v in teacher_sd.items()
-                   if k.startswith("sam_mask_decoder.")}
-    prompt_sd   = {k.replace("sam_prompt_encoder.", ""): v
-                   for k, v in teacher_sd.items()
-                   if k.startswith("sam_prompt_encoder.")}
-    missing, unexpected = model.mask_decoder.load_state_dict(decoder_sd, strict=False)
-    print(f"  Decoder transplant — missing: {missing[:3]}, unexpected: {unexpected[:3]}")
-    missing, _ = model.prompt_encoder.load_state_dict(prompt_sd, strict=False)
+    transplant = bool(int(os.environ.get("TRANSPLANT_DECODER", 1)))
+    if transplant:
+        # transplant fine-tuned decoder from teacher (CA-SAM2, SAM2 architecture)
+        teacher_sd = torch.load(teacher_ckpt, map_location="cpu", weights_only=False)
+        if isinstance(teacher_sd, dict) and set(teacher_sd.keys()) == {"model"}:
+            teacher_sd = teacher_sd["model"]
+        decoder_sd  = {k.replace("sam_mask_decoder.", ""): v
+                       for k, v in teacher_sd.items()
+                       if k.startswith("sam_mask_decoder.")}
+        prompt_sd   = {k.replace("sam_prompt_encoder.", ""): v
+                       for k, v in teacher_sd.items()
+                       if k.startswith("sam_prompt_encoder.")}
+        missing, unexpected = model.mask_decoder.load_state_dict(decoder_sd, strict=False)
+        print(f"  Decoder transplant — missing: {missing[:3]}, unexpected: {unexpected[:3]}")
+        missing, _ = model.prompt_encoder.load_state_dict(prompt_sd, strict=False)
+    else:
+        print("  TRANSPLANT_DECODER=0 — keeping vanilla SA-1B decoder and prompt encoder weights")
 
     return model.to(DEVICE)
 
