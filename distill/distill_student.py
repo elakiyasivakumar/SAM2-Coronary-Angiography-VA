@@ -348,6 +348,16 @@ def build_mobilesam(teacher_ckpt):
     else:
         print("  TRANSPLANT_DECODER=0 — keeping vanilla SA-1B decoder and prompt encoder weights")
 
+    # in-path neck adapter: bridges TinyViT feature space → what CA-SAM2 decoder expects
+    # set as attribute so forward_mobilesam can access it and it's saved in the checkpoint
+    use_neck = bool(int(os.environ.get("USE_NECK_ADAPTER", 0)))
+    if use_neck:
+        model.neck_adapter = nn.Conv2d(256, 256, kernel_size=1, bias=False).to(DEVICE)
+        nn.init.eye_(model.neck_adapter.weight.squeeze(-1).squeeze(-1))  # identity init
+        print("  NeckAdapter added (in forward path, saved in checkpoint)")
+    else:
+        model.neck_adapter = None
+
     return model.to(DEVICE)
 
 
@@ -356,6 +366,8 @@ def forward_mobilesam(model, imgs, pts):
     image_embed = model.image_encoder(imgs)  # [B, 256, 64, 64] at 1024; [B, 256, 32, 32] at 512
     if image_embed.shape[-1] != 64:
         image_embed = F.interpolate(image_embed, size=(64, 64), mode="bilinear", align_corners=False)
+    if getattr(model, "neck_adapter", None) is not None:
+        image_embed = model.neck_adapter(image_embed)
     logits_list = []
     for i, (cx, cy) in enumerate(pts):
         pt = torch.tensor([[[cx.item(), cy.item()]]],
@@ -563,6 +575,8 @@ def train(args):
         model = build_repvitsam(teacher_ckpt)
 
     trainable = [p for p in model.parameters() if p.requires_grad]
+    if getattr(model, "neck_adapter", None) is not None:
+        trainable += list(model.neck_adapter.parameters())
 
     # feature KD: adapter + frozen teacher encoder
     use_feat_kd = bool(int(os.environ.get("USE_FEAT_KD", 0)))
