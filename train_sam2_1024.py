@@ -224,19 +224,19 @@ def set_train_mode(model):
 
 
 # ── SAM2 forward ──────────────────────────────────────────────────────────────
-# BB_FEAT_SIZES for Hiera-Tiny at 1024: stride-32 final → 32×32
-# FPN outputs 3 scales: [64,64], [32,32], [16,16] at 1024 input
-BB_FEAT_SIZES = [(1024//(4*2**k),)*2 for k in range(3)]  # [(128,128),(64,64),(32,32)]
-
 def forward_sam2(model, imgs, pts, high_res=True):
     B = imgs.shape[0]
-    backbone_out = model.forward_image(imgs)
-    _, vision_feats, _, _ = model._prepare_backbone_features(backbone_out)
-    if model.directly_add_no_mem_embed:
+    # Call image_encoder directly (not forward_image) so gradients flow through
+    # unfrozen trunk blocks[10,11] and neck during training.
+    backbone_out = model.image_encoder(imgs)
+    _, vision_feats, _, feat_sizes = model._prepare_backbone_features(backbone_out)
+    # no_mem_embed is a video-mode attribute; safe to skip in image-only fine-tuning
+    if getattr(model, "directly_add_no_mem_embed", False):
         vision_feats[-1] = vision_feats[-1] + model.no_mem_embed
 
+    # vision_feats: list of [HW, B, C], finest→coarsest; feat_sizes matches
     feats = [feat.permute(1,2,0).view(B, -1, *fs)
-             for feat, fs in zip(vision_feats[::-1], BB_FEAT_SIZES[::-1])][::-1]
+             for feat, fs in zip(vision_feats[::-1], feat_sizes[::-1])][::-1]
     image_embed    = feats[-1]
     high_res_feats = feats[:-1]
 

@@ -55,9 +55,10 @@ export ES_PATIENCE=10
 export BATCH_SIZE=4
 export MODEL_VERSION=sam2_fluoroscopy_1024
 export HF_REPO=Elakiya17/fluoroscopy-sam2
-
-# HF token — set this before launching or pass via VM metadata
-# export HUGGING_FACE_HUB_TOKEN=<token>
+# Token injected at VM creation via --metadata hf-token=<value> (never commit the raw token)
+export HUGGING_FACE_HUB_TOKEN=$(curl -sf \
+  "http://metadata.google.internal/computeMetadata/v1/instance/attributes/hf-token" \
+  -H "Metadata-Flavor: Google" || echo "")
 
 cd /opt/SAM2
 python3 train_sam2_1024.py
