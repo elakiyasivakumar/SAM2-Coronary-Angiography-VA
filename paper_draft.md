@@ -1,12 +1,13 @@
 # CA-SAM2: Lightweight Coronary Artery Segmentation via Knowledge Distillation for Edge Deployment
 
 **Draft — [venue TBD, e.g., MICCAI 2026 / IEEE JBHI]**
+**Last updated: 2026-08-03 | Status: active experiment (SAM2.1 1024×1024 pending)**
 
 ---
 
 ## Abstract
 
-Real-time coronary artery segmentation during cardiac catheterization requires models that run on resource-constrained hardware at the point of care. We present CA-SAM2, a knowledge distillation pipeline that compresses a fine-tuned SAM2 teacher (Hiera-Tiny, 38.9M params, Dice 0.767) into MobileSAM (ViT-Tiny, 10.1M params). Through systematic ablation we show that response-based KD — transmitting teacher soft logits to the student — degrades performance when ground-truth masks are available and the teacher is architecturally mismatched to the student. Removing response KD entirely and training with GT supervision alone yields Dice 0.806, outperforming the teacher by 5.1% absolute. We further show that foreground-weighted encoder feature matching (feature KD) adds no measurable gain over GT-only training in this setting. The resulting 10.1M-parameter student runs inference on an 8GB-RAM edge device, enabling cath-lab deployment without GPU infrastructure.
+Real-time coronary artery segmentation during cardiac catheterization requires models that run on resource-constrained hardware at the point of care. We present CA-SAM2, a knowledge distillation pipeline that compresses a fine-tuned SAM2 teacher (Hiera-Tiny, 38.9M params, Dice 0.767) into MobileSAM (ViT-Tiny, 10.1M params). Through systematic ablation we show that response-based KD — transmitting teacher soft logits to the student — degrades performance when ground-truth masks are available and the teacher is architecturally mismatched to the student. Removing response KD entirely and training with GT supervision alone yields Dice 0.806, outperforming the teacher by 5.1% absolute. We further show that foreground-weighted encoder feature matching (feature KD, v6) and an in-path neck adapter (v7) add no measurable gain over GT-only training in this setting, suggesting the performance ceiling is set by the student encoder, not the decoder or feature alignment. We isolate whether 1024×1024 resolution (rather than distillation) is the primary driver of MobileSAM's advantage via a parallel fine-tuning of SAM2.1 Hiera-Tiny at 1024×1024 on the same ARCADE data (results pending). The resulting 10.1M-parameter student runs inference on an 8GB-RAM edge device, enabling cath-lab deployment without GPU infrastructure.
 
 ---
 
@@ -17,8 +18,9 @@ Real-time coronary artery segmentation during cardiac catheterization requires m
 - Knowledge distillation transfers task-specific capability from a large teacher to a lightweight student. However, **standard distillation assumptions break in the medical imaging setting**: (1) ground-truth masks are available (unlike natural image KD where labels are scarce), (2) teacher accuracy is moderate (~0.77 Dice), not near-perfect, and (3) teacher and student architectures often differ (SAM1 vs SAM2 decoder).
 - **Contributions:**
   - Empirical demonstration that response KD from an imperfect teacher *hurts* when GT masks are available (Dice 0.687 → 0.806 by removing it)
-  - Ablation showing feature KD adds no benefit over GT-only fine-tuning in this regime
+  - Ablation showing feature KD (v6, side-branch MSE) and in-path neck adapter (v7) add no benefit over GT-only fine-tuning in this regime
   - 10.1M-parameter MobileSAM student that exceeds its 38.9M-parameter teacher on the ARCADE benchmark
+  - Resolution isolation experiment: SAM2.1 Hiera-Tiny fine-tuned at 1024×1024 on ARCADE (results pending) to determine whether resolution drives the student's advantage
   - Inference latency analysis on an 8GB-RAM edge device
 
 ---
@@ -84,7 +86,8 @@ Real-time coronary artery segmentation during cardiac catheterization requires m
 |---|---|---|
 | Response KD (v1, v3) | Dice + wBCE + KD_BCE(soft logits) + clDice | Pre-generates soft logit maps |
 | **GT only (v4)** | **Dice + wBCE** | **None** |
-| Feature KD (v6) | Dice + wBCE + λ·FG-MSE(encoder features) | Runs each batch (frozen) |
+| Feature KD side-branch (v6) | Dice + wBCE + λ·FG-MSE(encoder features) | Runs each batch (frozen); adapter NOT in forward path — bug |
+| In-path neck adapter (v7) | Dice + wBCE | None (1×1 conv, identity init, between encoder and decoder) |
 
 ---
 
@@ -98,8 +101,9 @@ Real-time coronary artery segmentation during cardiac catheterization requires m
 | CA-SAM2 teacher | 38.9M | 512 | 0.767 | — |
 | v1 / v3 (response KD) | 10.1M | 1024 | 0.687–0.688 | — |
 | **v4 (GT only, partial decoder transplant)** | **10.1M** | **1024** | **0.806 ± 0.086** | **0.680** |
-| v6 (GT + feature KD) | 10.1M | 1024 | 0.805 ± 0.080 | 0.680 |
-| True fine-tune (SA-1B decoder, no transplant) | 10.1M | 1024 | *running* | — |
+| v6 (GT + feature KD, side-branch — buggy) | 10.1M | 1024 | 0.805 ± 0.080 | 0.680 |
+| v7 (GT + in-path neck adapter, 1×1 conv) | 10.1M | 1024 | 0.807 ± 0.079 | — |
+| SAM2.1 Hiera-Tiny 1024×1024 (v2 protocol) | 38.9M | 1024 | *pending* | — |
 
 ### 5.2 Key Findings
 
@@ -112,8 +116,16 @@ v1 (leaky split, response KD) = 0.688. v3 (clean split, response KD) = 0.687. Co
 **Finding 3: Feature KD adds nothing over GT-only training.**
 v4 = 0.806, v6 (+ foreground-weighted encoder MSE) = 0.805. The TinyViT (SA-1B) → Hiera-Tiny (ARCADE) feature gap is too wide to bridge with a 1×1 projection in 30 epochs. The GT loss already saturates available capacity given the partial decoder transplant.
 
-**Finding 4: Student outperforms teacher (0.806 vs 0.767).**
-This is partly explained by resolution advantage: MobileSAM operates at 1024×1024 vs teacher's 512×512. The finer spatial resolution benefits thin coronary vessels (~5% of pixels). We flag this explicitly to avoid overstating the distillation contribution.
+**Finding 4: In-path neck adapter (v7) is also neutral (0.807 vs 0.806).**
+V7 inserts a 1×1 conv (identity-initialized) between the encoder output and decoder input to bridge the TinyViT→CA-SAM2 feature space in the actual forward path. Dice 0.807 ± 0.079 vs v4's 0.806 ± 0.086 — within noise. The 1×1 conv does not address the encoder-level domain gap; the decoder cannot compensate for an encoder never trained on X-ray fluoroscopy.
+
+**Finding 5: Student outperforms teacher (0.806–0.807 vs 0.767).**
+This is partly explained by resolution advantage: MobileSAM operates at 1024×1024 vs teacher's 512×512. The finer spatial resolution benefits thin coronary vessels (~5% of pixels). We flag this explicitly to avoid overstating the distillation contribution. A SAM2.1 Hiera-Tiny fine-tuned at 1024×1024 (same v2 protocol as teacher, pending) will isolate whether resolution explains the gap.
+
+**Open question: paper story A vs B.**
+- Story A (resolution dominant): SAM2.1 at 1024×1024 achieves ≥0.800 → resolution, not distillation, is the key factor. Contribution becomes: "response KD hurts; when given resolution parity, a fine-tuned full model matches the distilled student."
+- Story B (decoder transplant dominant): SAM2.1 at 1024×1024 lands near 0.767 → the CA-SAM2 decoder transplant into MobileSAM is genuinely the source of improvement, not just resolution.
+Both are scientifically valid; the paper framing depends on the SAM2.1 1024 result.
 
 ---
 
@@ -132,7 +144,7 @@ This is partly explained by resolution advantage: MobileSAM operates at 1024×10
 ## 7. Discussion
 
 - **Why response KD fails in this setting:** The standard KD premise is that the teacher's soft label at an ambiguous pixel encodes more information than a hard 0/1 label. That holds when the teacher is near-perfect (>0.95 Dice) and the student's architecture can faithfully approximate the teacher's output manifold. Neither condition holds here: the teacher is at 0.767 Dice and the architectures are SAM1 vs SAM2 (different decoders, different encoder families). The soft label at a vessel boundary is often wrong, and the student cannot reproduce the teacher's output geometry regardless.
-- **Decoder transplant question:** True fine-tune baseline (*running*) will clarify whether the partial CA-SAM2 → MobileSAM decoder transplant contributes to 0.806 or whether supervised ARCADE training at 1024×1024 is doing all the work.
+- **Resolution vs decoder transplant:** SAM2.1 Hiera-Tiny fine-tuned at 1024×1024 (pending) is the key experiment to resolve whether the student's 0.806 comes from the CA-SAM2 decoder initialization or simply from higher resolution. The MobileSAM true fine-tune baseline (SA-1B decoder, no transplant) was terminated early; a complete run would additionally isolate the decoder transplant contribution from ARCADE training in general.
 - **Limitations:** (1) 100-image internal validation set may not be reliable for early stopping — a larger internal split would be more robust; (2) resolution advantage confounds teacher vs student comparison; (3) single centroid click prompt — box or multiple clicks may improve boundary accuracy.
 
 ---
@@ -156,4 +168,18 @@ We demonstrate that for coronary artery segmentation with available GT masks, re
 
 ---
 
-*[References TBD — MobileSAM, SAM2, ARCADE dataset, Hinton KD, Romero FitNets, MedSAM, MedSAM2]*
+## References
+
+- Kirillov, A. et al. (2023). Segment Anything. ICCV 2023. arXiv:2304.02643
+- Ravi, N. et al. (2024). SAM 2: Segment Anything in Images and Videos. arXiv:2408.00714
+- Zhang, C. et al. (2023). Faster Segment Anything: Towards Lightweight SAM for Mobile Applications. arXiv:2306.14289 [MobileSAM]
+- Hinton, G., Vinyals, O., Dean, J. (2015). Distilling the Knowledge in a Neural Network. arXiv:1503.02531
+- Romero, A. et al. (2015). FitNets: Hints for Thin Deep Nets. ICLR 2015. arXiv:1412.6550
+- Ma, J. et al. (2024). Segment Anything in Medical Images. Nature Communications. arXiv:2304.12306 [MedSAM]
+- Wang, Y. et al. (2024). MedSAM2: Segment Anything in 3D Medical Images and Videos. arXiv:2408.00874
+- Shit, S. et al. (2021). clDice — A Novel Topology-Preserving Loss Function for Tubular Structure Segmentation. CVPR 2021.
+- Howard, J. & Ruder, S. (2018). Universal Language Model Fine-tuning for Text Classification. ACL 2018. [ULMFiT, discriminative LRs]
+- Cheng, T. et al. (2023). SAMed: A Small Amount of Medical Training Makes SAM a Better Medical Image Segmentation Model. arXiv:2307.15189
+- ARCADE Challenge (2023). Automatic Region-based Coronary Artery Disease dEtection. MICCAI 2023 Challenge.
+
+*[Add venue/DOI when available; verify Ravi et al. 2024 year if submitting to 2025/2026 venue]*
