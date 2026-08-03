@@ -1,7 +1,7 @@
 #!/bin/bash
 # SAM2.1 Hiera-Tiny fine-tuned at 1024x1024 on ARCADE coronary angiography.
 # Uses Meta's facebookresearch/sam2 (NOT MedSAM2) — native 1024 config.
-# Protocol: v2 (partial unfreeze, discriminative LRs, clDice, 5x aug).
+# Protocol: partial unfreeze (blocks[10,11] + neck), discriminative LRs, clDice, 10x aug.
 # Goal: isolate whether 1024x1024 resolution explains MobileSAM v4's 0.806 Dice advantage.
 set -euo pipefail
 LOG=/tmp/sam2_1024.log
@@ -21,8 +21,9 @@ pip3 install -q scikit-image scipy opencv-python-headless huggingface_hub timm
 git clone https://github.com/facebookresearch/sam2.git /opt/sam2_meta
 pip3 install -e /opt/sam2_meta --no-build-isolation
 
-# Our code
-git clone https://github.com/elakiyasivakumar/SAM2-Coronary-Angiography-VA.git /opt/SAM2
+# Our code — use the experiment branch
+git clone --branch fluoroscopy-sam2-1024 \
+  https://github.com/elakiyasivakumar/SAM2-Coronary-Angiography-VA.git /opt/SAM2
 
 mkdir -p /home/jupyter
 

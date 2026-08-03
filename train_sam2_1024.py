@@ -5,12 +5,13 @@ Architecture: facebookresearch/sam2 (Meta, NOT MedSAM2).
 Config: sam2.1_hiera_t.yaml → image_size: 1024 (native).
 Base weights: facebook/sam2.1-hiera-tiny (HuggingFace).
 
-Protocol mirrors CA-SAM2 v2:
-  - Frozen encoder except last 2 Hiera blocks + FPN neck
+Protocol:
+  - Frozen encoder except last 2 Hiera blocks (blocks[10,11]) + FPN neck
   - Discriminative LRs: decoder 5e-5 | neck 1e-5 | trunk blocks[10,11] 5e-6
   - Loss: 0.5×Dice + 0.2×wBCE + clDice (warmup epochs 3-8 → 0.3×)
-  - 5× offline geometric augmentation (same as v2 notebook)
+  - 10× offline geometric augmentation (900 images → 9,000 training samples)
   - 50 epochs max, early stopping patience=10 on 100-image internal val
+  - Centroid click prompt (jitter ±5px in original image space)
 
 Goal: isolate whether 1024×1024 resolution (not distillation) explains MobileSAM v4's
 0.806 Dice advantage over the 512×512 CA-SAM2 teacher at 0.767.
@@ -51,35 +52,72 @@ IMG_NORM = transforms.Compose([
                          std=[0.229, 0.224, 0.225]),
 ])
 
-# ── Augmentation (same 5× variants as CA-SAM2 v2 notebook) ───────────────────
-SUFFIXES = ["orig", "hf", "vf", "r20", "r20_hf"]
+# ── Augmentation: 10× offline (1 original + 9 geometric transforms) ──────────
+# Same transform applied identically to image and mask (replay-style consistency).
+# Transforms chosen for fluoroscopy: gantry angle variation (rotations),
+# patient orientation (flips), and scale variation (zoom).
+SUFFIXES = [
+    "orig",          # 0 — identity
+    "hf",            # 1 — flip left-right
+    "vf",            # 2 — flip top-bottom
+    "hf_vf",         # 3 — flip both (= 180° rotation)
+    "rm20",          # 4 — rotate −20°
+    "rp20",          # 5 — rotate +20°
+    "hf_rm20",       # 6 — flip-LR then rotate −20°
+    "hf_rp20",       # 7 — flip-LR then rotate +20°
+    "vf_rm10",       # 8 — flip-TB then rotate −10°
+    "zoom085",       # 9 — zoom out to 85%, pad to original size
+]
+
+def _zoom(img_pil, msk_pil, scale=0.85):
+    W, H = img_pil.size
+    nw, nh = int(W * scale), int(H * scale)
+    img_s = img_pil.resize((nw, nh), Image.BICUBIC)
+    msk_s = msk_pil.resize((nw, nh), Image.NEAREST)
+    pad_l, pad_t = (W - nw) // 2, (H - nh) // 2
+    img_p = Image.new("RGB", (W, H), (0, 0, 0))
+    msk_p = Image.new("L",   (W, H), 0)
+    img_p.paste(img_s, (pad_l, pad_t))
+    msk_p.paste(msk_s, (pad_l, pad_t))
+    return img_p, msk_p
 
 def augment_pair(img_pil, msk_pil):
-    pairs = [
-        (img_pil, msk_pil),
-        (img_pil.transpose(Image.FLIP_LEFT_RIGHT),
-         msk_pil.transpose(Image.FLIP_LEFT_RIGHT)),
-        (img_pil.transpose(Image.FLIP_TOP_BOTTOM),
-         msk_pil.transpose(Image.FLIP_TOP_BOTTOM)),
-        (img_pil.rotate(-20, resample=Image.BICUBIC),
-         msk_pil.rotate(-20, resample=Image.NEAREST)),
+    hf  = lambda i, m: (i.transpose(Image.FLIP_LEFT_RIGHT),
+                        m.transpose(Image.FLIP_LEFT_RIGHT))
+    vf  = lambda i, m: (i.transpose(Image.FLIP_TOP_BOTTOM),
+                        m.transpose(Image.FLIP_TOP_BOTTOM))
+    rot = lambda i, m, a: (i.rotate(a, resample=Image.BICUBIC),
+                           m.rotate(a, resample=Image.NEAREST))
+    i_hf,  m_hf  = hf(img_pil, msk_pil)
+    i_vf,  m_vf  = vf(img_pil, msk_pil)
+    i_hfvf, m_hfvf = vf(i_hf, m_hf)
+    i_rm20, m_rm20 = rot(img_pil, msk_pil, -20)
+    i_rp20, m_rp20 = rot(img_pil, msk_pil,  20)
+    i_z,   m_z   = _zoom(img_pil, msk_pil, 0.85)
+    return [
+        (img_pil,  msk_pil),
+        (i_hf,     m_hf),
+        (i_vf,     m_vf),
+        (i_hfvf,   m_hfvf),
+        (i_rm20,   m_rm20),
+        (i_rp20,   m_rp20),
+        rot(i_hf,  m_hf,  -20),
+        rot(i_hf,  m_hf,   20),
+        rot(i_vf,  m_vf,  -10),
+        (i_z,      m_z),
     ]
-    img_hf = img_pil.transpose(Image.FLIP_LEFT_RIGHT)
-    msk_hf = msk_pil.transpose(Image.FLIP_LEFT_RIGHT)
-    pairs.append((img_hf.rotate(-20, resample=Image.BICUBIC),
-                  msk_hf.rotate(-20, resample=Image.NEAREST)))
-    return pairs
 
-def generate_aug5k(src_img_paths, src_msk_paths, out_dir):
+def generate_aug10k(src_img_paths, src_msk_paths, out_dir):
     img_out = os.path.join(out_dir, "images")
     msk_out = os.path.join(out_dir, "masks")
     os.makedirs(img_out, exist_ok=True)
     os.makedirs(msk_out, exist_ok=True)
     stem0 = os.path.splitext(os.path.basename(src_img_paths[0]))[0]
     if os.path.exists(os.path.join(img_out, f"{stem0}_orig.png")):
-        print("  Aug5k already present — skipping generation")
+        print("  Aug10k already present — skipping generation")
         return
-    print(f"  Generating {len(src_img_paths)*5} augmented images...")
+    n = len(src_img_paths) * len(SUFFIXES)
+    print(f"  Generating {n} augmented images ({len(src_img_paths)} × {len(SUFFIXES)})...")
     for ip, mp in zip(src_img_paths, src_msk_paths):
         stem = os.path.splitext(os.path.basename(ip))[0]
         img  = Image.open(ip).convert("RGB")
@@ -91,12 +129,14 @@ def generate_aug5k(src_img_paths, src_msk_paths, out_dir):
     print(f"  Done: {len(os.listdir(img_out))} images")
 
 
-def centroid_click(mask_np, jitter=10):
+def centroid_click(mask_np, jitter=5):
     ys, xs = np.where(mask_np > 0)
     if len(xs) == 0:
         return mask_np.shape[1]//2, mask_np.shape[0]//2
-    cx = int(xs.mean()) + random.randint(-jitter, jitter)
-    cy = int(ys.mean()) + random.randint(-jitter, jitter)
+    # Random foreground pixel + jitter — matches v4 distillation training exactly
+    idx = np.random.randint(len(xs))
+    cx  = int(xs[idx]) + random.randint(-jitter, jitter)
+    cy  = int(ys[idx]) + random.randint(-jitter, jitter)
     return np.clip(cx, 0, mask_np.shape[1]-1), np.clip(cy, 0, mask_np.shape[0]-1)
 
 
@@ -308,9 +348,9 @@ def train():
     msk_val = [msk_paths_all[i] for i in val_idx]
     print(f"Split: {len(img_trn)} train / {len(img_val)} internal val / 200 held-out test")
 
-    # 5× offline augmentation
-    aug_dir = "/home/jupyter/arcade_aug5k"
-    generate_aug5k(img_trn, msk_trn, aug_dir)
+    # 10× offline augmentation (900 images → 9,000 training samples)
+    aug_dir = "/home/jupyter/arcade_aug10k"
+    generate_aug10k(img_trn, msk_trn, aug_dir)
     aug_img = sorted(glob.glob(aug_dir + "/images/*.png"))
     aug_msk = sorted(glob.glob(aug_dir + "/masks/*.png"))
     print(f"Augmented training set: {len(aug_img)} images")
