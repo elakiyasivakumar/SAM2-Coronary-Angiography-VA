@@ -275,6 +275,13 @@ def forward_sam2(model, imgs, pts, high_res=True):
     # Call image_encoder directly (not forward_image) so gradients flow through
     # unfrozen trunk blocks[10,11] and neck during training.
     backbone_out = model.image_encoder(imgs)
+    # forward_image normally applies conv_s0/conv_s1 to FPN levels 0 and 1
+    # before the mask decoder sees them. We must replicate that here.
+    if getattr(model, "use_high_res_features_in_sam", False):
+        backbone_out["backbone_fpn"][0] = model.sam_mask_decoder.conv_s0(
+            backbone_out["backbone_fpn"][0])
+        backbone_out["backbone_fpn"][1] = model.sam_mask_decoder.conv_s1(
+            backbone_out["backbone_fpn"][1])
     _, vision_feats, _, feat_sizes = model._prepare_backbone_features(backbone_out)
     # no_mem_embed is a video-mode attribute; safe to skip in image-only fine-tuning
     if getattr(model, "directly_add_no_mem_embed", False):
