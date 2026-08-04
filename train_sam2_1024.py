@@ -212,11 +212,12 @@ def combined_loss(logits, target, pos_weight, cldice_w):
 # ── Model ─────────────────────────────────────────────────────────────────────
 def build_model(base_ckpt):
     from sam2.build_sam import build_sam2
-    # Hydra config search requires cwd to be inside the sam2 repo
+    # build_sam2 resolves config relative to repo root — must chdir there
+    # and use the full path configs/sam2.1/sam2.1_hiera_t.yaml
     _orig = os.getcwd()
     os.chdir(SAM2_REPO)
     try:
-        model = build_sam2("sam2.1_hiera_t.yaml", base_ckpt,
+        model = build_sam2("configs/sam2.1/sam2.1_hiera_t.yaml", base_ckpt,
                            device=DEVICE, apply_postprocessing=False)
     finally:
         os.chdir(_orig)
