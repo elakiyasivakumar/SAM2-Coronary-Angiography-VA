@@ -212,9 +212,14 @@ def combined_loss(logits, target, pos_weight, cldice_w):
 # ── Model ─────────────────────────────────────────────────────────────────────
 def build_model(base_ckpt):
     from sam2.build_sam import build_sam2
-    # Uses Meta's sam2.1_hiera_t.yaml → image_size: 1024
-    model = build_sam2("sam2.1_hiera_t.yaml", base_ckpt,
-                       device=DEVICE, apply_postprocessing=False)
+    # Hydra config search requires cwd to be inside the sam2 repo
+    _orig = os.getcwd()
+    os.chdir(SAM2_REPO)
+    try:
+        model = build_sam2("sam2.1_hiera_t.yaml", base_ckpt,
+                           device=DEVICE, apply_postprocessing=False)
+    finally:
+        os.chdir(_orig)
     n = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"  SAM2.1 Hiera-Tiny: {n:.1f}M params  |  image_size=1024  |  device={DEVICE}")
     return model
