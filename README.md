@@ -2,7 +2,7 @@
 
 Fine-tuned MedSAM2 on annotated coronary angiograms (ARCADE dataset) and applied it to fluoroscopic video. The model goes from Dice 0.033 zero-shot to **Dice 0.767 ± 0.082** on the ARCADE validation set (200 images) using a single centroid click prompt.
 
-**Checkpoint:** [Elaks17/CA-SAM2 on HuggingFace](https://huggingface.co/Elaks17/CA-SAM2)
+**Checkpoint:** [Elakiya17/CA-SAM2 on HuggingFace](https://huggingface.co/Elakiya17/CA-SAM2)
 
 ---
 
@@ -64,7 +64,7 @@ import torch, sys
 sys.path.insert(0, "MedSAM2")
 from sam2.build_sam import build_sam2
 
-ckpt = hf_hub_download(repo_id="Elaks17/CA-SAM2", filename="medsam2_arcade_v2.pt")
+ckpt = hf_hub_download(repo_id="Elakiya17/CA-SAM2", filename="medsam2_arcade_v2.pt")
 model = build_sam2("configs/sam2.1_hiera_t512.yaml", ckpt, device="cuda")
 model.eval()
 ```
@@ -92,6 +92,6 @@ If you use this work, please cite:
   title   = {Fine-Tuning SAM2 for Coronary Artery Segmentation in X-Ray Fluoroscopy},
   author  = {Sivakumar, Elakiya},
   year    = {2026},
-  note    = {Columbia University. Checkpoint: \url{https://huggingface.co/Elaks17/CA-SAM2}}
+  note    = {Columbia University. Checkpoint: \url{https://huggingface.co/Elakiya17/CA-SAM2}}
 }
 ```
